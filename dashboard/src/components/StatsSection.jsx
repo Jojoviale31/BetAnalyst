@@ -75,7 +75,7 @@ export default function StatsSection() {
   const gf = finished.reduce((acc, m) => acc + (parseInt(m.score) >= 0 ? (m.venue === "H" ? (m.home_score || 0) : (m.away_score || 0)) : 0), 0);
 
   return (
-    <div className="flex h-[calc(100vh-96px)]">
+    <div className="flex h-[calc(100vh-84px)]">
       {/* Left panel */}
       <div className="w-[260px] border-r border-surface-3 flex flex-col">
         {/* Competition tabs */}

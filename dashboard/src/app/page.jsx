@@ -17,6 +17,15 @@ const SECTIONS = {
   bankroll: BankrollSection,
 };
 
+const SECTION_TITLES = {
+  worldcup: "FIFA World Cup 2026",
+  predictions: "Prédictions Poisson",
+  odds: "Comparateur de cotes",
+  stats: "Historique & Statistiques",
+  news: "Actualités",
+  bankroll: "Bankroll",
+};
+
 export default function App() {
   const [section, setSection] = useState("worldcup");
   const ActiveSection = SECTIONS[section];
@@ -24,18 +33,16 @@ export default function App() {
   return (
     <div className="flex min-h-screen bg-surface-0">
       <Sidebar active={section} onChange={setSection} />
-      <main className="flex-1 ml-[220px]">
+      <main className="flex-1 ml-[220px] min-w-0">
         {/* Live scores ticker */}
         <LiveScores />
-        
+
         {/* Top bar */}
-        <div className="h-[48px] border-b border-surface-3 px-6 flex items-center justify-between bg-surface-1/80 backdrop-blur-sm sticky top-0 z-10">
-          <h1 className="text-sm font-semibold text-zinc-300 capitalize">
-            {section === "worldcup" ? "World Cup 2026" : section}
-          </h1>
-          <div className="flex items-center gap-3">
-            <div className="w-2 h-2 rounded-full bg-success animate-pulse" />
-            <span className="text-xs text-zinc-600">Live</span>
+        <div className="h-11 border-b border-surface-3 px-5 flex items-center justify-between bg-surface-1">
+          <h1 className="text-[13px] font-bold text-zinc-200 tracking-tight">{SECTION_TITLES[section] || section}</h1>
+          <div className="flex items-center gap-2">
+            <span className="w-1.5 h-1.5 rounded-full bg-success animate-pulse" />
+            <span className="text-[10px] text-zinc-600 font-mono uppercase tracking-wide">Connecté</span>
           </div>
         </div>
 
