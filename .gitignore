@@ -1,0 +1,11 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.db
+.DS_Store
+dashboard/node_modules/
+dashboard/.next/
+*.swp
+*.swo
