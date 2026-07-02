@@ -2,9 +2,10 @@
 
 import { useState, useEffect } from "react";
 import { ChevronRight, Loader2 } from "lucide-react";
-import { fetchTeams, fetchTeamHistory } from "@/lib/api";
+import { fetchTeams, fetchTeamHistory, fetchWCTeams, fetchWCTeamHistory } from "@/lib/api";
 
 const COMPETITIONS = [
+  { code: "WC", name: "World Cup 2026" },
   { code: "PL", name: "Premier League" },
   { code: "PD", name: "La Liga" },
   { code: "SA", name: "Serie A" },
@@ -51,10 +52,10 @@ export default function StatsSection() {
     setTeams([]);
     setSelectedTeam(null);
     setMatches([]);
-    fetchTeams(competition)
-      .then((d) => setTeams(d.teams || []))
-      .catch(() => setTeams([]))
-      .finally(() => setLoadingTeams(false));
+    const loader = competition === "WC"
+      ? fetchWCTeams().then(d => setTeams(d.teams || []))
+      : fetchTeams(competition).then(d => setTeams(d.teams || []));
+    loader.catch(() => setTeams([])).finally(() => setLoadingTeams(false));
   }, [competition]);
 
   // Load matches when team is selected
@@ -62,10 +63,31 @@ export default function StatsSection() {
     if (!selectedTeam) return;
     setLoadingMatches(true);
     setMatches([]);
-    fetchTeamHistory(competition, selectedTeam.id)
-      .then((d) => setMatches(d.matches || []))
-      .catch(() => setMatches([]))
-      .finally(() => setLoadingMatches(false));
+
+    if (competition === "WC") {
+      fetchWCTeamHistory(selectedTeam.id)
+        .then(d => {
+          // Normaliser le format WC vers le format club
+          const normalized = (d.matches || []).map(m => ({
+            id: m.id,
+            date: m.date,
+            matchday: null,
+            status: m.score ? "FINISHED" : "SCHEDULED",
+            venue: m.venue,
+            opponent: m.opponent,
+            score: m.score,
+            result: m.result,
+          }));
+          setMatches(normalized);
+        })
+        .catch(() => setMatches([]))
+        .finally(() => setLoadingMatches(false));
+    } else {
+      fetchTeamHistory(competition, selectedTeam.id)
+        .then((d) => setMatches(d.matches || []))
+        .catch(() => setMatches([]))
+        .finally(() => setLoadingMatches(false));
+    }
   }, [selectedTeam, competition]);
 
   const finished = matches.filter((m) => m.status === "FINISHED");

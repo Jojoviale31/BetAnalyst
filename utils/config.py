@@ -10,6 +10,7 @@ class Config:
     ODDS_API_KEY = os.getenv("ODDS_API_KEY")
     BALLDONTLIE_API_KEY = os.getenv("BALLDONTLIE_API_KEY")
     APISPORTS_KEY = os.getenv("APISPORTS_KEY")
+    ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 
     # Database
     DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://betuser:betpass@localhost:5432/betanalytics")

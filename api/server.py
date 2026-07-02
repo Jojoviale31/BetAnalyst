@@ -12,6 +12,7 @@ import httpx
 import asyncio
 import logging
 from datetime import datetime
+from typing import Any
 from itertools import product as iterproduct
 from typing import Optional
 from difflib import SequenceMatcher
@@ -47,25 +48,42 @@ ODDS_TO_COMP = {
 
 # ─── TEAM NAME MATCHING ──────────────────────────────────
 
+CLUB_STOPWORDS = {
+    "fc", "afc", "cf", "sc", "as", "ssc", "us", "ud",
+    "city", "united", "town", "county", "athletic", "albion",
+    "rovers", "wanderers", "real", "club", "calcio", "deportivo",
+}
+# "ac" volontairement absent : "AC Milan" et "Inter Milan" partagent "Milan",
+# le retirer ferait matcher les deux clubs entre eux.
+
+
 def fuzzy_match(name, candidates, threshold=0.45):
     """Match un nom d'équipe Odds API avec nos noms en base."""
-    name_lower = name.lower()
+    name_lower = name.lower().replace("&", "and")
     best_score = 0
     best_match = None
 
     for c in candidates:
-        c_lower = c.lower()
+        c_lower = c.lower().replace("&", "and")
         # Exact substring match
         if name_lower in c_lower or c_lower in name_lower:
             return c
-        # Fuzzy
+
+        name_words = set(name_lower.split()) - CLUB_STOPWORDS
+        c_words = set(c_lower.split()) - CLUB_STOPWORDS
         score = SequenceMatcher(None, name_lower, c_lower).ratio()
-        # Bonus for shared words
-        name_words = set(name_lower.split())
-        c_words = set(c_lower.split())
-        shared = len(name_words & c_words)
-        if shared > 0:
-            score += shared * 0.15
+
+        if name_words and c_words:
+            shorter, longer = sorted([name_words, c_words], key=len)
+            # Tous les mots significatifs du nom le plus court doivent se
+            # retrouver dans l'autre (évite "Inter Milan" ~ "AC Milan" :
+            # un seul mot partagé "Milan" ne suffit pas).
+            if not shorter.issubset(longer):
+                continue
+            score += 0.3
+        elif score < 0.75:
+            continue
+
         if score > best_score:
             best_score = score
             best_match = c
@@ -525,23 +543,231 @@ def get_bankroll():
     db = SessionLocal()
     try:
         bets = db.execute(select(Bet).order_by(Bet.created_at.desc())).scalars().all()
-        total_stake = sum(b.stake for b in bets)
-        total_profit = sum(b.profit for b in bets if b.profit is not None)
-        wins = sum(1 for b in bets if b.result == "win")
-        losses = sum(1 for b in bets if b.result == "loss")
+        settled = [b for b in bets if b.result in ("win", "loss")]
+        total_stake = sum(b.stake for b in bets)          # Tout ce qui est misé
+        total_profit = sum(b.profit for b in settled if b.profit is not None)
+        wins = sum(1 for b in settled if b.result == "win")
+        losses = sum(1 for b in settled if b.result == "loss")
+
+        # Bankroll de départ = 0 (l'utilisateur définit la sienne)
+        start_bankroll = 0.0
+        bankroll = start_bankroll
+        curve = []
+        for b in reversed(bets):
+            if b.result in ("win", "loss") and b.profit is not None:
+                bankroll += b.profit
+                curve.append({"date": b.created_at.isoformat(), "value": round(bankroll, 2)})
+
         return {
-            "total_bets": len(bets), "wins": wins, "losses": losses,
-            "win_rate": round(wins / max(wins + losses, 1) * 100, 1),
+            "total_bets": len(bets),
+            "settled": len(settled),
+            "pending": len(bets) - len(settled),
+            "wins": wins, "losses": losses,
+            "win_rate": round(wins / max(len(settled), 1) * 100, 1),
             "total_stake": round(total_stake, 2),
             "total_profit": round(total_profit, 2),
-            "roi": round(total_profit / max(total_stake, 1) * 100, 1),
-            "recent_bets": [{
-                "id": b.id, "sport": b.sport,
-                "match": f"{b.home_team} vs {b.away_team}",
-                "type": b.bet_type, "odds": b.odds, "stake": b.stake,
-                "result": b.result, "profit": b.profit,
-            } for b in bets[:20]],
+            "roi": round(total_profit / max(total_stake, 0.01) * 100, 1),
+            "start_bankroll": start_bankroll,
+            "current_bankroll": round(total_profit, 2),
+            "bankroll_curve": curve,
+            "bets": [{
+                "id": b.id,
+                "sport": b.sport,
+                "home": b.home_team,
+                "away": b.away_team,
+                "match_date": b.match_date.isoformat() if b.match_date else None,
+                "type": b.bet_type,
+                "odds": b.odds,
+                "stake": b.stake,
+                "result": b.result,
+                "profit": b.profit,
+                "notes": b.notes,
+                "created_at": b.created_at.isoformat(),
+            } for b in bets],
         }
+    finally:
+        db.close()
+
+
+@app.post("/api/bankroll/bet")
+def add_bet(data: dict[str, Any]):
+    db = SessionLocal()
+    try:
+        bet = Bet(
+            sport=data.get("sport", "football"),
+            match_date=datetime.fromisoformat(data["match_date"]) if data.get("match_date") else datetime.utcnow(),
+            home_team=data["home"],
+            away_team=data["away"],
+            bet_type=data["type"],
+            odds=float(data["odds"]),
+            stake=float(data["stake"]),
+            result=None,
+            profit=None,
+            notes=data.get("notes"),
+        )
+        db.add(bet)
+        db.commit()
+        db.refresh(bet)
+        return {"id": bet.id, "status": "created"}
+    finally:
+        db.close()
+
+
+@app.put("/api/bankroll/bet/{bet_id}/result")
+def update_bet_result(bet_id: int, data: dict[str, Any]):
+    db = SessionLocal()
+    try:
+        bet = db.get(Bet, bet_id)
+        if not bet:
+            return {"error": "not found"}
+        result = data.get("result")  # win | loss | void
+        bet.result = result
+        if result == "win":
+            bet.profit = round(bet.stake * (bet.odds - 1), 2)
+        elif result == "loss":
+            bet.profit = -round(bet.stake, 2)
+        else:
+            bet.profit = 0
+        db.commit()
+        return {"id": bet_id, "result": result, "profit": bet.profit}
+    finally:
+        db.close()
+
+
+@app.post("/api/bankroll/auto-settle")
+async def auto_settle():
+    """
+    Vérifie tous les paris en attente contre les vrais résultats WC
+    et les règle automatiquement si le match est terminé.
+    """
+    import httpx as _httpx
+    from utils.config import config as _config
+
+    db = SessionLocal()
+    try:
+        pending = db.execute(
+            select(Bet).where(Bet.result == None)
+        ).scalars().all()
+
+        if not pending:
+            return {"settled": 0}
+
+        # Récupère les résultats WC
+        async with _httpx.AsyncClient(timeout=8) as client:
+            r = await client.get(
+                "https://api.football-data.org/v4/competitions/WC/matches",
+                headers={"X-Auth-Token": _config.FOOTBALL_DATA_API_KEY},
+                params={"limit": 80},
+            )
+        finished = {}
+        for m in r.json().get("matches", []):
+            if m.get("status") != "FINISHED":
+                continue
+            h = (m["homeTeam"].get("name") or "").lower()
+            a = (m["awayTeam"].get("name") or "").lower()
+            sc = m.get("score", {}).get("fullTime", {})
+            finished[f"{h}|{a}"] = {
+                "home_score": sc.get("home") or 0,
+                "away_score": sc.get("away") or 0,
+                "winner": m.get("score", {}).get("winner"),
+            }
+
+        def find_result(bet: Bet):
+            home = (bet.home_team or "").lower()
+            away = (bet.away_team or "").lower()
+            key = f"{home}|{away}"
+            match = finished.get(key)
+            if not match:
+                for k, v in finished.items():
+                    kh, ka = k.split("|")
+                    if (home[:4] in kh or kh[:4] in home) and (away[:4] in ka or ka[:4] in away):
+                        match = v
+                        break
+            if not match:
+                return None, None
+
+            hs = match["home_score"]
+            as_ = match["away_score"]
+            total = hs + as_
+            winner = match["winner"]
+            t = bet.bet_type or "other"
+
+            if t == "home":
+                result = "win" if winner == "HOME_TEAM" else "loss"
+            elif t == "away":
+                result = "win" if winner == "AWAY_TEAM" else "loss"
+            elif t == "draw":
+                result = "win" if winner == "DRAW" else "loss"
+            elif t == "over_25":
+                result = "win" if total > 2.5 else "loss"
+            elif t == "under_25":
+                result = "win" if total < 2.5 else "loss"
+            elif t == "over_15":
+                result = "win" if total > 1.5 else "loss"
+            elif t == "under_15":
+                result = "win" if total < 1.5 else "loss"
+            elif t == "over_05":
+                result = "win" if total > 0.5 else "loss"
+            elif t == "btts":
+                result = "win" if (hs > 0 and as_ > 0) else "loss"
+            elif t == "double_chance":
+                notes = (bet.notes or "").lower()
+                home_in = home[:4] in notes or home in notes
+                away_in = away[:4] in notes or away in notes
+                has_draw = "nul" in notes or "draw" in notes
+                if home_in and has_draw:
+                    result = "win" if winner in ("HOME_TEAM", "DRAW") else "loss"
+                elif away_in and has_draw:
+                    result = "win" if winner in ("AWAY_TEAM", "DRAW") else "loss"
+                elif home_in and away_in:
+                    result = "win" if winner in ("HOME_TEAM", "AWAY_TEAM") else "loss"
+                else:
+                    return None, None
+            else:
+                return None, None  # scorer, other → on ne peut pas auto-settle
+
+            profit = round(bet.stake * (bet.odds - 1), 2) if result == "win" else -round(bet.stake, 2)
+            return result, profit
+
+        settled_count = 0
+        for bet in pending:
+            result, profit = find_result(bet)
+            if result:
+                bet.result = result
+                bet.profit = profit
+                settled_count += 1
+
+        db.commit()
+        return {"settled": settled_count, "total_pending": len(pending)}
+
+    finally:
+        db.close()
+
+
+@app.put("/api/bankroll/bet/{bet_id}/reset")
+def reset_bet(bet_id: int):
+    db = SessionLocal()
+    try:
+        bet = db.get(Bet, bet_id)
+        if not bet:
+            return {"error": "not found"}
+        bet.result = None
+        bet.profit = None
+        db.commit()
+        return {"id": bet_id, "status": "reset"}
+    finally:
+        db.close()
+
+
+@app.delete("/api/bankroll/bet/{bet_id}")
+def delete_bet(bet_id: int):
+    db = SessionLocal()
+    try:
+        bet = db.get(Bet, bet_id)
+        if bet:
+            db.delete(bet)
+            db.commit()
+        return {"status": "deleted"}
     finally:
         db.close()
 
@@ -554,3 +780,11 @@ def startup():
 # World Cup live endpoints
 from api.worldcup import router as worldcup_router
 app.include_router(worldcup_router)
+
+# News RSS
+from api.news import router as news_router
+app.include_router(news_router)
+
+# Analyze + image parsing
+from api.analyze import router as analyze_router
+app.include_router(analyze_router)

@@ -1,7 +1,9 @@
-import { Trophy, TrendingUp, BarChart3, Newspaper, Calculator, Wallet } from "lucide-react";
+import { Trophy, TrendingUp, BarChart3, Newspaper, Calculator, Wallet, Home, ListOrdered } from "lucide-react";
 
 const NAV = [
+  { id: "home", label: "Accueil", icon: Home },
   { id: "worldcup", label: "World Cup", icon: Trophy },
+  { id: "competition", label: "Compétition", icon: ListOrdered },
   { id: "predictions", label: "Prédictions", icon: Calculator },
   { id: "odds", label: "Cotes", icon: TrendingUp },
   { id: "stats", label: "Stats", icon: BarChart3 },
